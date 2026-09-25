@@ -92,10 +92,14 @@ jobs:
           VER="1.0.${{ github.run_number }}"
           OUTDIR="app/build/outputs/apk/online/release"
           SRC="$OUTDIR/app-online-release.apk"
+          SRC_UNSIGNED="$OUTDIR/app-online-release-unsigned.apk"
           DEST="$OUTDIR/MobileHarness-Online-v${VER}.apk"
           if [ -f "$SRC" ]; then
             mv "$SRC" "$DEST"
-            echo "✅ Renamed: $DEST"
+            echo "✅ Renamed signed APK: $DEST"
+          elif [ -f "$SRC_UNSIGNED" ]; then
+            mv "$SRC_UNSIGNED" "$DEST"
+            echo "✅ Renamed unsigned APK: $DEST"
           else
             echo "::error::APK not found at expected path: $SRC"
             ls -lh "$OUTDIR" || true
