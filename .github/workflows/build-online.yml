@@ -3,7 +3,7 @@ name: Build Mobile-Harness Online APK
 on:
   push:
     branches: [ "main", "release/**" ]
-    paths-ignore: [ '**.md', '.github/**' ]
+    paths-ignore: [ '**.md' ]
   workflow_dispatch: {}
 
 concurrency:
