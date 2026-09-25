@@ -1,0 +1,129 @@
+name: Build Mobile-Harness Online APK
+
+on:
+  push:
+    branches: [ "main", "release/**" ]
+    paths-ignore: [ '**.md', '.github/**' ]
+  workflow_dispatch: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build Online APK
+    runs-on: ubuntu-latest
+
+    steps:
+      # ── 1. Checkout + Submodules (proot, libandroid-shmem) ──────────────────
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: recursive     # required: third_party/proot & third_party/libandroid-shmem
+
+      # ── 2. Set up JDK 17 ─────────────────────────────────────────────────────
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      # ── 3. Set up Android NDK 26.1.10909125 ──────────────────────────────────
+      - name: Set up NDK
+        uses: nttld/setup-ndk@v1
+        id: setup-ndk
+        with:
+          ndk-version: r26b          # r26b = 26.1.10909125, exact version required by build.gradle.kts
+          add-to-path: true
+
+      # ── 4. Gradle Setup & Caching (official, latest v6) ─────────────────────
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v6
+
+      # ── 5. Decode Keystore ───────────────────────────────────────────────────
+      - name: Decode signing keystore
+        run: |
+          mkdir -p signing
+          if [ -n "${{ secrets.SIGNING_KEYSTORE_B64 }}" ]; then
+            echo "${{ secrets.SIGNING_KEYSTORE_B64 }}" | base64 --decode > signing/signing-key.jks
+            echo "✅ Keystore decoded: $(wc -c < signing/signing-key.jks) bytes"
+          else
+            echo "::warning::SIGNING_KEYSTORE_B64 not set — APK will be unsigned."
+          fi
+
+      # ── 6. Download Runtime Bundle (online flavor needs pocketdev-agy only) ──
+      - name: Download bundled agent assets
+        run: |
+          mkdir -p dist/runtime-bundles
+          curl -fL \
+            "https://github.com/techjarves/Mobile-Harness/releases/download/runtime-2026.09.4/pocketdev-agy-arm64-2026.09.1.tar.zst" \
+            -o dist/runtime-bundles/pocketdev-agy-arm64-2026.09.1.tar.zst
+          echo "✅ Runtime bundle downloaded: $(du -sh dist/runtime-bundles/pocketdev-agy-arm64-2026.09.1.tar.zst)"
+
+      # ── 7. Make gradlew executable ───────────────────────────────────────────
+      - name: chmod gradlew
+        run: chmod +x ./gradlew
+
+      # ── 8. Build Online Release APK ──────────────────────────────────────────
+      - name: Assemble Online Release APK
+        env:
+          ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
+          MH_UPLOAD_STORE_FILE: ${{ github.workspace }}/signing/signing-key.jks
+          MH_UPLOAD_STORE_PASSWORD: ${{ secrets.SIGNING_STORE_PASSWORD }}
+          MH_UPLOAD_KEY_ALIAS: ${{ secrets.SIGNING_KEY_ALIAS }}
+          MH_UPLOAD_KEY_PASSWORD: ${{ secrets.SIGNING_KEY_PASSWORD }}
+        run: |
+          BUILD=${{ github.run_number }}
+          VER_NAME="1.0.${BUILD}"
+          ./gradlew assembleOnlineRelease \
+            -PappVersionCode="${BUILD}" \
+            -PappVersionName="${VER_NAME}" \
+            -PmhNdkVersion=26.1.10909125 \
+            --no-daemon --stacktrace
+
+      # ── 9. Rename APK ────────────────────────────────────────────────────────
+      - name: Rename APK
+        run: |
+          VER="1.0.${{ github.run_number }}"
+          OUTDIR="app/build/outputs/apk/online/release"
+          SRC="$OUTDIR/app-online-release.apk"
+          DEST="$OUTDIR/MobileHarness-Online-v${VER}.apk"
+          if [ -f "$SRC" ]; then
+            mv "$SRC" "$DEST"
+            echo "✅ Renamed: $DEST"
+          else
+            echo "::error::APK not found at expected path: $SRC"
+            ls -lh "$OUTDIR" || true
+            exit 1
+          fi
+
+      # ── 10. Upload Artifact ──────────────────────────────────────────────────
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: MobileHarness-Online-v1.0.${{ github.run_number }}
+          path: app/build/outputs/apk/online/release/MobileHarness-Online-*.apk
+          retention-days: 7
+
+      # ── 11. Create GitHub Release ────────────────────────────────────────────
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: v1.0.${{ github.run_number }}
+          name: "Mobile Harness Online v1.0.${{ github.run_number }}"
+          body: |
+            ## Mobile Harness Online v1.0.${{ github.run_number }}
+
+            **Branch:** `${{ github.ref_name }}` | **Commit:** `${{ github.sha }}`
+
+            Automated release build of the **Online** flavor.
+          draft: false
+          prerelease: false
+          files: app/build/outputs/apk/online/release/MobileHarness-Online-*.apk
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
